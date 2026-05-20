@@ -4,7 +4,11 @@ import time
 # =========================================================
 # LOAD CLEANED DATA
 # =========================================================
-data = pd.read_parquet("cleaned_air_quality.parquet")
+# Using raw string for the file path to prevent escape sequence issues
+data = pd.read_parquet(r"C:\Users\USER\Desktop\TEAM GRID\cleaned_air_quality.parquet")
+
+# Ensure timestamps are uniform Datetime objects globally right at the start
+data['timestamp'] = pd.to_datetime(data['timestamp'], utc=True)
 
 # =========================================================
 # CREATE STAR SCHEMA
@@ -20,15 +24,7 @@ dim_station['station_key'] = dim_station.index + 1
 
 # --------------------------------------------------
 
-# =========================================================
-# FIX TIMESTAMP TYPES
-# =========================================================
-
-data['timestamp'] = pd.to_datetime(data['timestamp'], utc=True)
-
-# =========================================================
-# CREATE DATE DIMENSION
-# =========================================================
+# ---------------- DATE DIMENSION ------------------
 
 dim_date = pd.DataFrame({
     'timestamp': data['timestamp']
@@ -42,18 +38,16 @@ dim_date['day'] = dim_date['timestamp'].dt.day
 dim_date = dim_date.drop_duplicates().reset_index(drop=True)
 
 dim_date['date_key'] = dim_date.index + 1
-# =========================================================
-# CREATE FACT TABLE
-# =========================================================
+
+# --------------------------------------------------
+
+# ---------------- FACT TABLE ----------------------
 
 fact_air_quality = data.merge(
     dim_station,
     on=['station_id', 'state', 'city', 'station_name'],
     how='left'
-)
-# Ensure timestamps are datetime in all tables
-data['timestamp'] = pd.to_datetime(data['timestamp'], utc=True)
-fact_air_quality = fact_air_quality.merge(
+).merge(
     dim_date[['timestamp', 'date_key']],
     on='timestamp',
     how='left'
@@ -72,25 +66,12 @@ fact_air_quality = fact_air_quality[[
 ]]
 
 # =========================================================
-# CREATE WIDE TABLE FOR COMPARISON
+# CREATE WIDE TABLE FOR COMPARISON (Denormalized Long Table)
 # =========================================================
+# To keep row counts equal, the wide table retains its long shape
+# but keeps all descriptive metadata inline without indexing or pivoting.
+wide_df = data.copy()
 
-wide_df = data.pivot_table(
-    index=['station_id', 'state', 'city', 'station_name', 'timestamp'],
-    columns='pollutant',
-    values='value',
-    aggfunc='mean'
-).reset_index()
-
-wide_df.columns.name = None
-
-wide_df = wide_df.merge(
-    data[['station_id', 'timestamp',
-          'at_c', 'rh_percent',
-          'ws_m_s', 'rf_mm',
-          'bp_mmhg']].drop_duplicates(),
-    on=['station_id', 'timestamp']
-)
 
 # =========================================================
 # BENCHMARK FUNCTION
@@ -98,9 +79,7 @@ wide_df = wide_df.merge(
 
 def benchmark(label, func):
     start = time.time()
-
     result = func()
-
     end = time.time()
 
     duration = (end - start) * 1000
@@ -111,7 +90,6 @@ def benchmark(label, func):
         rows = "N/A"
 
     print(f"{label:<55} {duration:>10.2f} ms   {rows:>10}")
-
     return result
 
 # =========================================================
@@ -160,9 +138,7 @@ benchmark(
 
 benchmark(
     "[WIDE] Filter by month",
-    lambda: wide_df[
-        pd.to_datetime(wide_df['timestamp']).dt.month == month
-    ]
+    lambda: wide_df[wide_df['timestamp'].dt.month == month]
 )
 
 print()
@@ -199,9 +175,7 @@ benchmark(
 
 benchmark(
     "[WIDE] PM2.5 lookup",
-    lambda: wide_df[
-        ['station_id', 'city', 'timestamp', 'pm25']
-    ].dropna()
+    lambda: wide_df[wide_df['pollutant'] == 'pm25']
 )
 
 print()
@@ -221,8 +195,8 @@ benchmark(
 benchmark(
     "[WIDE] Average pollution by year",
     lambda: wide_df.groupby(
-        pd.to_datetime(wide_df['timestamp']).dt.year
-    )['pm25'].mean()
+        wide_df['timestamp'].dt.year
+    )['value'].mean()
 )
 
 print()
